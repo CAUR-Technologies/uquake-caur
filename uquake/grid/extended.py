@@ -5192,6 +5192,86 @@ class SurfaceVelocityEnsemble(list):
 
         return obj
 
+    def smooth_dispersion_curves(self, s_factor: float = 1.0):
+        """
+        Smooth dispersion curves independently at each grid node
+        using a cubic smoothing spline along the period axis.
+
+        For every spatial position (i, j), the group velocity values across all
+        periods are extracted and a 1D smoothing spline is fit as a function of
+        period. The smoothing factor is scaled adaptively based on the variance of
+        the dispersion curve at that grid point.
+
+        Parameters
+        ----------
+        s_factor : float, default=1.0
+            Global scaling factor applied to the spline smoothing parameter.
+            The actual smoothing value used at each grid node is
+
+                s = N_periods * var(curve) * s_factor
+
+            Larger values produce smoother dispersion curves, while smaller values
+            follow the original data more closely.
+
+        Returns
+        -------
+        smooth_group_ensemble : same type as self
+            A deep copy of the current ensemble where the dispersion curves at
+            every grid node have been spline-smoothed along the period dimension.
+            Spatial dimensions and metadata are preserved.
+
+        Notes
+        -----
+        - Smoothing is applied independently at each (i, j) grid node.
+        - A cubic spline (k=3) is used via `scipy.interpolate.UnivariateSpline`.
+        - No smoothing is performed in the spatial dimensions, only across period.
+        - The method assumes that `self[k].data` contains 2D group velocity maps
+          with consistent shape for all periods.
+        """
+
+        from scipy.interpolate import UnivariateSpline
+
+        smooth_group_ensemble = copy.deepcopy(self)
+        nx, ny = self[0].dims
+        periods_list = np.array(self.periods, dtype=float)
+        n_periods = len(periods_list)
+
+        def smooth_spline(x, y, *, smoothing_factor=None, knots=None, k=3,
+                          return_spline=False):
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            kwargs = {"k": k}
+            if knots is not None:
+                kwargs["t"] = knots
+            spline = UnivariateSpline(x, y, s=smoothing_factor, **kwargs)
+            y_smooth = spline(x)
+            return (y_smooth, spline) if return_spline else y_smooth
+
+        # Stack data for vectorized access: shape (n_periods, nx, ny)
+        data_stack = np.stack([g.data for g in self], axis=0)
+
+        # Iterate over grid points (i, j)
+        for i in range(nx):
+            for j in range(ny):
+                grp_vel_ij = data_stack[:, i, j]  # shape (n_periods,)
+
+                # Adaptive smoothing factor
+                s_factor_ij = n_periods * np.var(grp_vel_ij) * s_factor
+
+                # Smooth in one shot
+                grp_vel_smooth = smooth_spline(
+                    periods_list, grp_vel_ij,
+                    smoothing_factor=s_factor_ij,
+                    knots=None,
+                    return_spline=False
+                )
+
+                # Assign back without looping over k
+                for k, val in enumerate(grp_vel_smooth):
+                    smooth_group_ensemble[k].data[i, j] = val
+
+        return smooth_group_ensemble
+
 
 class PhaseVelocityEnsemble(SurfaceVelocityEnsemble):
     """Represents an ensemble of PhaseVelocity instances.
