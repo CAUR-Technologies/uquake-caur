@@ -5192,6 +5192,7 @@ class SurfaceVelocityEnsemble(list):
 
         return obj
 
+
 class PhaseVelocityEnsemble(SurfaceVelocityEnsemble):
     """Represents an ensemble of PhaseVelocity instances.
 
