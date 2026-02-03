@@ -3616,6 +3616,8 @@ class SurfaceWaveVelocity(Grid):
     def plot(
             self,
             receivers: Optional[Union[np.ndarray, SeedEnsemble]] = None,
+            fig: Optional[plt.Figure] = None,
+            ax: Optional[plt.Axes] = None,
             fig_size: Tuple[float, float] = (10, 8),
             vmin: Optional[float] = None,
             vmax: Optional[float] = None,
@@ -3623,36 +3625,57 @@ class SurfaceWaveVelocity(Grid):
             geographic: bool = False,
             **imshow_kwargs,
     ):
-        """Plot the phase/group-velocity grid with optional receiver overlays.
-
-        :param receivers: Receiver positions to superimpose on the map. Provide either
-                          a ``(N, 2)`` array of ``(x, y)`` coordinates or a
-                          :class:`SeedEnsemble`.
-        :type receivers: Optional[Union[np.ndarray, SeedEnsemble]]
-        :param fig_size: Size of the matplotlib figure in inches ``(width, height)``.
-        :type fig_size: Tuple[float, float]
-        :param vmin: Lower bound for the colour scale. Defaults to the 1st percentile
-                     when omitted.
-        :type vmin: Optional[float]
-        :param vmax: Upper bound for the colour scale. Defaults to the 99th percentile
-                     when omitted.
-        :type vmax: Optional[float]
-        :param mask: Definition of regions to hide, following
-                     :meth:`~uquake.grid.base.Grid.masked_region_xy` conventions.
-        :type mask: Optional[dict]
-        :param geographic: If ``True``, align axes with easting/northing instead of
-                           grid indices.
-        :type geographic: bool
-        :param imshow_kwargs: Extra keyword arguments forwarded to
-                              :func:`matplotlib.axes.Axes.imshow`.
-        :type imshow_kwargs: dict
-        :returns: Tuple ``(fig, ax)`` with the generated matplotlib figure and axes.
-        :rtype: Tuple[matplotlib.figure.Figure, matplotlib.axes.Axes]
         """
+        Plot the phase/group-velocity grid with optional receiver overlays.
+
+        This function now supports plotting into an existing matplotlib figure and axes,
+        which is useful for creating subplots of multiple maps.
+
+        Parameters
+        ----------
+        receivers : Optional[Union[np.ndarray, SeedEnsemble]]
+            Receiver positions to superimpose on the map. Provide either a (N, 2) array
+            of (x, y) coordinates or a SeedEnsemble.
+        fig : Optional[matplotlib.figure.Figure]
+            Existing figure to plot into. If None, a new figure will be created.
+        ax : Optional[matplotlib.axes.Axes]
+            Existing axes to plot into. If None, a new axes will be created.
+        fig_size : Tuple[float, float], default=(10, 8)
+            Size of the figure in inches (width, height). Used only if fig/ax is not provided.
+        vmin : Optional[float]
+            Minimum value for the color scale. Defaults to 1st percentile if None.
+        vmax : Optional[float]
+            Maximum value for the color scale. Defaults to 99th percentile if None.
+        mask : Optional[dict]
+            Mask definition, following `masked_region_xy` conventions.
+        geographic : bool, default=False
+            If True, axes are labeled with geographic coordinates (easting/northing)
+            instead of grid indices.
+        imshow_kwargs : dict
+            Additional keyword arguments passed to `matplotlib.axes.Axes.imshow`.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The figure containing the plot.
+        ax : matplotlib.axes.Axes
+            The axes containing the plot.
+
+        Notes
+        -----
+        - If fig and ax are provided, the function plots into the existing axes and
+          does not create a new colorbar. For a shared colorbar across multiple
+          subplots, handle it outside this function.
+        - This function only supports 2D data grids.
+        """
+
         if self.data.ndim != 2:
             raise ValueError("SurfaceWaveVelocity.plot currently supports only 2D data.")
 
-        fig, ax = plt.subplots(figsize=fig_size)
+        # Use provided fig/ax or create new
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(figsize=fig_size)
+
         if 'cmap' not in imshow_kwargs:
             imshow_kwargs.setdefault('cmap', 'seismic')
 
@@ -3687,6 +3710,7 @@ class SurfaceWaveVelocity(Grid):
             **imshow_kwargs,
         )
 
+        # Mask handling (same as before)
         if mask is not None:
             positive_mask = super().masked_region_xy(**mask, ax=ax)
             masked_data = np.where(positive_mask, self.data, np.nan)
@@ -3710,9 +3734,16 @@ class SurfaceWaveVelocity(Grid):
         if vmax is None:
             vmax = np.nanpercentile(grid_data, 99)
         cax.set_clim(vmin, vmax)
-        cb = fig.colorbar(cax)
-        cb.update_normal(cax)
 
+        # Only add colorbar if fig/ax were created inside this function
+        if ax is None:
+            # only create colorbar if this function created the axes
+            cb = fig.colorbar(cax)
+            cb.update_normal(cax)
+        else:
+            cb = None
+
+            # Axis labels (same as before)
         if self.grid_units == GridUnits.METER:
             if geographic:
                 ax.set_xlabel("Easting (m)")
@@ -3720,15 +3751,7 @@ class SurfaceWaveVelocity(Grid):
             else:
                 ax.set_xlabel("X (m)")
                 ax.set_ylabel("Y (m)")
-
-        if self.grid_type == GridTypes.VELOCITY_METERS:
-            cb.set_label(self.velocity_type.value + " VELOCITY " + self.phase.value + " (m/s)",
-                         rotation=270, labelpad=10)
-        elif self.grid_type == GridTypes.VELOCITY_KILOMETERS:
-            cb.set_label(self.velocity_type.value + " VELOCITY " + self.phase.value + " (km/s)",
-                         rotation=270, labelpad=10)
-
-        if self.grid_units == GridUnits.KILOMETER:
+        elif self.grid_units == GridUnits.KILOMETER:
             if geographic:
                 ax.set_xlabel("Easting (km)")
                 ax.set_ylabel("Northing (km)")
@@ -3736,9 +3759,9 @@ class SurfaceWaveVelocity(Grid):
                 ax.set_xlabel("X (km)")
                 ax.set_ylabel("Y (km)")
 
+        ax.set_title(f"Period = {self.period:.2f} s", weight="bold")
 
-        ax.set_title("Period = {0:1.2f} s".format(self.period), weight = "bold")
-
+        # Plot receivers
         if isinstance(receivers, np.ndarray):
             ax.plot(receivers[:, 0], receivers[:, 1], "s", color="yellow")
 
@@ -3746,7 +3769,7 @@ class SurfaceWaveVelocity(Grid):
             coordinates = receivers.locs
             ax.plot(coordinates[:, 0], coordinates[:, 1], "s", color="yellow")
 
-        return fig, ax
+        return fig, ax, cax
 
     def __repr__(self):
         """Return a concise text summary of key grid attributes."""
