@@ -2480,11 +2480,14 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
         # 2. Compute sensitivity kernel
         # ------------------------------------------------------------------
         # velocities and density from grid
+        # velocities and density from grid
         if self.grid_type == GridTypes.VELOCITY_METERS:
-            # convert from m to km for depth, and m/s to km/s for velocities
-            layer_thickness /= 1.0e3
             vp_profile *= 1.0e-3
             vs_profile *= 1.0e-3
+
+        if self.grid_units == GridUnits.METER:
+            layer_thickness *= 1.0e-3
+
 
         kernel_nodes = self._compute_sensitivity_kernel(
             period=period,
