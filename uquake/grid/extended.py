@@ -2366,7 +2366,7 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
 
     def plot_sensitivity_kernel(
             self,
-            period: float,
+            periods: Union[float, List[float], np.ndarray],
             x: Union[float, int],
             y: Union[float, int],
             z: Union[list, np.ndarray, None] = None,
@@ -2374,53 +2374,61 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
             disba_param: DisbaParam = DisbaParam(),
             grid_space: bool = False,
             velocity_type: VelocityType = VelocityType.GROUP,
+            kernel_plot_kwargs: dict | List[dict] | None = None,
+            velocity_plot_kwargs: dict | None = None,
+            n_extra_layers: int = 0,
     ) -> Tuple[plt.Figure, plt.Axes, plt.Axes]:
         """
-        Plot sensitivity kernel and velocity profile.
+        Plot sensitivity kernel(s) and velocity profile at a given point.
 
         Parameters
         ----------
-        period : float
-            Wave period in seconds.
-        x, y : float or int
-            Horizontal coordinates of the point of interest.
-            Interpreted either in grid space (indices) or in physical space,
-            depending on `grid_space`.
-        z : array-like or None, optional
-            Depth boundaries of layers (top and bottom). If None, depths and
-            layer thicknesses are derived from the grid.
-        phase : Phases or str, optional
-            Surface wave phase type (e.g., Rayleigh or Love).
+        periods : float | list | np.ndarray
+            Single period or multiple periods for which to compute the kernels.
+        x : float | int
+            X-coordinate (longitude or grid index).
+        y : float | int
+            Y-coordinate (latitude or grid index).
+        z : list | np.ndarray, optional
+            Custom depth vector for interpolation. If None, uses the grid vertical
+             spacing.
+        phase : Phases | str, default Phases.RAYLEIGH
+            The seismic phase to compute (Rayleigh or Love).
         disba_param : DisbaParam, optional
-            Parameters for DISBA kernels.
-        grid_space : bool, optional
-            If True, `x` and `y` are interpreted as grid indices (i, j).
-            If False, they are interpreted as physical coordinates.
-        velocity_type : VelocityType, optional
-            Whether to use phase or group velocity kernels.
-
-        Returns
-        -------
-        fig : matplotlib.figure.Figure
-        ax_kernel : matplotlib.axes.Axes
-            Axis for sensitivity kernel.
-        ax_velocity : matplotlib.axes.Axes
-            Axis for velocity profile.
+            Parameters passed to the disba kernel engine.
+        grid_space : bool, default False
+            If True, x and y are treated as grid indices.
+        velocity_type : VelocityType, default VelocityType.GROUP
+            Whether to compute kernels for Phase or Group velocity.
+        kernel_plot_kwargs : dict | list[dict], optional
+            Matplotlib kwargs forwarded to the kernel plot. Can be a single dict
+            applied to all, or a list of dicts to style each period individually.
+        velocity_plot_kwargs : dict, optional
+            Matplotlib kwargs forwarded to the velocity plot (stairs or line).
+        n_extra_layers : int, default 0
+            Number of extra layers to append to the bottom of the model using the
+            last available physical properties.
         """
 
-        # ------------------------------------------------------------------
-        # 1. Build 1D model (thickness, Vs, Vp, density, depth) at (x, y)
-        # ------------------------------------------------------------------
+        kernel_plot_kwargs = kernel_plot_kwargs or {}
+        velocity_plot_kwargs = velocity_plot_kwargs or {}
 
+        # Ensure periods is a numpy array
+        if isinstance(periods, (float, int)):
+            periods = np.array([float(periods)])
+        else:
+            periods = np.array(periods, dtype=float)
+
+        # -------------------------------
+        # 1. Build 1D model at (x, y)
+        # -------------------------------
         if z is None:
-            # layer thickness from grid spacing
-            layer_thickness = self.spacing[2] * np.ones(shape=(self.shape[2] - 1))
+            # Initial thickness from grid spacing
+            base_thickness = self.spacing[2] * np.ones(shape=(self.shape[2] - 1))
             vs_grid = self.s.data
             vp_grid = self.p.data
 
-            # choose grid indices (i, j)
             if not grid_space:
-                # transform physical coordinates to grid indices
                 gx, gy, _ = self.transform_to((x, y, self.origin[2]))
                 i, j = int(gx), int(gy)
             else:
@@ -2429,24 +2437,23 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
             if not self.s.in_grid([i, j, 0], grid_space=True):
                 raise IndexError(f"The point ({i}, {j}) is not inside the grid.")
 
-            # 1D profiles: average between cell centers along depth
             vs_profile = 0.5 * (vs_grid[i, j, 1:] + vs_grid[i, j, :-1])
             vp_profile = 0.5 * (vp_grid[i, j, 1:] + vp_grid[i, j, :-1])
             density_profile = 0.5 * (
-                    self.density.data[i, j, 1:] + self.density.data[i, j, :-1]
-            )
+                    self.density.data[i, j, 1:] + self.density.data[i, j, :-1])
 
-            # depth nodes (top of each cell)
+            # Base depth array
             depth = self.origin[2] + np.arange(self.s.data.shape[2]) * self.spacing[2]
+            layer_thickness = base_thickness
 
         else:
-            # ensure we work in physical coordinates for in_grid
             if grid_space:
                 x_phys, y_phys, _ = self.transform_from((x, y, 0))
             else:
                 x_phys, y_phys = x, y
 
-            if not self.s.in_grid([x_phys, y_phys, self.origin[2]], grid_space=False):
+            if not self.s.in_grid([x_phys, y_phys, self.origin[2]],
+                                  grid_space=False):
                 raise IndexError(
                     f"The point ({x_phys}, {y_phys}) is not inside the grid.")
 
@@ -2454,99 +2461,117 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
             layer_centers = 0.5 * (z[1:] + z[:-1])
             layer_thickness = z[1:] - z[:-1]
 
-            # coordinates for interpolation (centers and z nodes)
-            coord_centers = np.column_stack(
-                (
-                    x_phys * np.ones_like(layer_centers),
-                    y_phys * np.ones_like(layer_centers),
-                    layer_centers,
-                )
-            )
-            coord_z_nodes = np.column_stack(
-                (x_phys * np.ones_like(z), y_phys * np.ones_like(z), z)
-            )
+            coord_centers = np.column_stack((
+                x_phys * np.ones_like(layer_centers),
+                y_phys * np.ones_like(layer_centers),
+                layer_centers
+            ))
+            coord_z_nodes = np.column_stack((
+                x_phys * np.ones_like(z),
+                y_phys * np.ones_like(z),
+                z
+            ))
 
-            # interpolate seismic parameters at layer centers
             vs_profile = self.s.interpolate(coord_centers, grid_space=False)
-
-            # keep velocity_sz in case you need it later, but not used for plotting:
             _vs_at_nodes = self.s.interpolate(coord_z_nodes, grid_space=False)
-
             vp_profile = self.p.interpolate(coord_centers, grid_space=False)
             density_profile = self.density.interpolate(coord_centers, grid_space=False)
-            depth = copy.copy(z)
+            depth = z.copy()
 
-        # ------------------------------------------------------------------
-        # 2. Compute sensitivity kernel
-        # ------------------------------------------------------------------
-        # velocities and density from grid
-        # velocities and density from grid
+        max_depth = depth[-1]
+
+        # -------------------------------
+        # 1b. Append Extra Layers
+        # -------------------------------
+        if n_extra_layers > 0:
+            # Append constant thickness (using last layer's thickness)
+            extra_th = np.full(n_extra_layers, layer_thickness[-1])
+            layer_thickness = np.concatenate([layer_thickness, extra_th])
+
+            # Append last known physical values
+            vs_profile = np.concatenate(
+                [vs_profile, np.full(n_extra_layers, vs_profile[-1])])
+            vp_profile = np.concatenate(
+                [vp_profile, np.full(n_extra_layers, vp_profile[-1])])
+            density_profile = np.concatenate(
+                [density_profile, np.full(n_extra_layers, density_profile[-1])])
+
+            # Update depth array for plotting (calculate cumulative depth)
+            extra_depths = depth[-1] + np.cumsum(extra_th)
+            depth = np.concatenate([depth, extra_depths])
+
+            # If we had interpolated nodes for vs_plot, we need to extend those too
+            if z is not None:
+                _vs_at_nodes = np.concatenate(
+                    [_vs_at_nodes, np.full(n_extra_layers, _vs_at_nodes[-1])])
+
+        # Scale velocities and thickness if needed
         if self.grid_type == GridTypes.VELOCITY_METERS:
             vp_profile *= 1.0e-3
             vs_profile *= 1.0e-3
-
         if self.grid_units == GridUnits.METER:
             layer_thickness *= 1.0e-3
 
-
-        kernel_nodes = self._compute_sensitivity_kernel(
-            period=period,
-            layers_thickness=layer_thickness,
-            velocity_p=vp_profile,
-            velocity_s=vs_profile,
-            density=density_profile,
-            phase=phase,
-            disba_param=disba_param,
-            velocity_type=velocity_type,
-        )
-
-        # ------------------------------------------------------------------
-        # 3. Create figure and axes
-        # ------------------------------------------------------------------
+        # -------------------------------
+        # 2. Create figure and axes
+        # -------------------------------
         fig, (ax_kernel, ax_velocity) = plt.subplots(1, 2, figsize=(11, 5))
 
-        # ---- Left axis: sensitivity kernel ----
-        ax_kernel.plot(kernel_nodes, depth, "-ob")
-        ax_kernel.set_ylim([depth[-1] + 0.5 * self.spacing[2], depth[0]])
+        # ---- Loop over periods and plot kernels ----
+        for idx, period in enumerate(periods):
+            kernel_nodes = self._compute_sensitivity_kernel(
+                period=period,
+                layers_thickness=layer_thickness,
+                velocity_p=vp_profile,
+                velocity_s=vs_profile,
+                density=density_profile,
+                phase=phase,
+                disba_param=disba_param,
+                velocity_type=velocity_type,
+            )
 
-        if velocity_type == VelocityType.PHASE:
-            ax_kernel.set_xlabel("Phase sensitivity kernel")
-        else:
-            ax_kernel.set_xlabel("Group sensitivity kernel")
+            current_style = dict(marker="o", linestyle="-", label=f"{period:.2f} s")
+            if isinstance(kernel_plot_kwargs, list):
+                if idx < len(kernel_plot_kwargs):
+                    current_style.update(kernel_plot_kwargs[idx])
+            elif isinstance(kernel_plot_kwargs, dict):
+                current_style.update(kernel_plot_kwargs)
 
-        ax_kernel.set_title(f"Period {period:.2f} s")
+            # Plotting against depth (the length of kernel_nodes should match layers +
+            # 1 or layers)
+            ax_kernel.plot(kernel_nodes, depth[:len(kernel_nodes)], **current_style)
+
+        ax_kernel.set_ylim([max_depth, depth[0]])
+        ax_kernel.set_xlabel(
+            "Phase sensitivity" if velocity_type == VelocityType.PHASE else
+            "Group sensitivity")
+        ax_kernel.set_ylabel("Depth")
+        ax_kernel.set_title("Sensitivity Kernels")
         ax_kernel.grid(True)
+        ax_kernel.legend()
 
-        # ------------------------------------------------------------------
-        # 4. Right axis: velocity profile
-        # ------------------------------------------------------------------
-        ax_velocity.set_ylim([depth[-1] + 0.5 * self.spacing[2], depth[0]])
+        # ---- Velocity subplot ----
+        ax_velocity.set_ylim([max_depth, depth[0]])
 
-        # y-label depends only on depth units
-        if self.grid_units == GridUnits.METER:
-            ax_kernel.set_ylabel("Depth (m)")
-        else:
-            ax_kernel.set_ylabel("Depth (km)")
-
-        if self.grid_type == GridTypes.VELOCITY_METERS:
-            ax_velocity.set_xlabel("S wave velocity (m/s)")
-        else:
-            ax_velocity.set_xlabel("S wave velocity (km/s)")
-
-        # choose representation (stairs vs line) based on whether we have explicit layers
         if z is None:
-            # use stairs when layer_thickness and layer centers come from the grid
             vs_plot = vs_profile
-            ax_velocity.stairs(vs_plot, depth, orientation="horizontal", color="k")
+            default_velocity_kwargs = dict(orientation="horizontal", color="k")
+            default_velocity_kwargs.update(velocity_plot_kwargs)
+            # depth array for stairs needs to be len(vs_plot) + 1
+            ax_velocity.stairs(vs_plot, depth[:len(vs_plot) + 1],
+                               **default_velocity_kwargs)
         else:
-            # user-provided z: simple line profile
             vs_plot = _vs_at_nodes
-            ax_velocity.plot(vs_plot, depth, "-k")
+            default_velocity_kwargs = dict(color="k")
+            default_velocity_kwargs.update(velocity_plot_kwargs)
+            ax_velocity.plot(vs_plot, depth, **default_velocity_kwargs)
 
-        # x-limits from Vs profile
-        min_vs = float(np.min(vs_plot))
-        max_vs = float(np.max(vs_plot))
-        ax_velocity.set_xlim([min_vs, max_vs])
+        ax_velocity.set_xlim(
+            [float(np.min(vs_plot)) * 0.9, float(np.max(vs_plot)) * 1.1])
+        if self.grid_type == GridTypes.VELOCITY_METERS:
+            ax_velocity.set_xlabel("Vs (m /s )")
+        if self.grid_type == GridTypes.VELOCITY_KILOMETERS:
+            ax_velocity.set_xlabel("Vs (km /s )")
         ax_velocity.grid(True)
 
         fig.tight_layout()
