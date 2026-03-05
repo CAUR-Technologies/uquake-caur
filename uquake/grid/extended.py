@@ -3763,13 +3763,8 @@ class SurfaceWaveVelocity(Grid):
             vmax = np.nanpercentile(grid_data, 99)
         cax.set_clim(vmin, vmax)
 
-        # Only add colorbar if fig/ax were created inside this function
-        if ax is None:
-            # only create colorbar if this function created the axes
-            cb = fig.colorbar(cax)
-            cb.update_normal(cax)
-        else:
-            cb = None
+        cb = fig.colorbar(cax, ax=ax)
+        cb.update_normal(cax)
 
             # Axis labels (same as before)
         if self.grid_units == GridUnits.METER:
