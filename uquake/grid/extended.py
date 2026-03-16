@@ -2239,7 +2239,7 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
         ny = self.dims[1]
         layer_thickness = self.spacing[2] * np.ones(self.shape[2] - 1)
 
-        if self.grid_type == GridTypes.VELOCITY_METERS:
+        if self.grid_units == GridUnits.METER:
             layer_thickness /= 1e3
 
         i_indices = np.kron(np.arange(nx), np.ones(ny)).astype(int)
@@ -2340,29 +2340,38 @@ class SeismicPropertyGridEnsemble(VelocityGridEnsemble):
         dc = disba_param.dc
         dp = disba_param.dp
 
+        # extend model
+        nnodes = len(velocity_s) + 1
+        layers_thickness_ext = np.append(layers_thickness, [layers_thickness[-1]] * 5)
+        layers_thickness_ext[-1] = 5.0
+
+        velocity_p_ext = np.append(velocity_p, [velocity_p[-1]] * 5)
+        velocity_s_ext = np.append(velocity_s, [velocity_s[-1]] * 5)
+        density_ext = np.append(density, [density[-1]] * 5)
+
         # calculate the Sensitivity kernel
         if velocity_type == VelocityType.PHASE:
-            sensitivity = PhaseSensitivity(thickness=layers_thickness,
-                                           velocity_p=velocity_p,
-                                           velocity_s=velocity_s,
+            sensitivity = PhaseSensitivity(thickness=layers_thickness_ext,
+                                           velocity_p=velocity_p_ext,
+                                           velocity_s=velocity_s_ext,
                                            density=density, dc=dc,
                                            algorithm=algorithm, dp=dp)
 
         if velocity_type == VelocityType.GROUP:
-            sensitivity = GroupSensitivity(thickness=layers_thickness,
-                                           velocity_p=velocity_p,
-                                           velocity_s=velocity_s,
-                                           density=density, dc=dc,
+            sensitivity = GroupSensitivity(thickness=layers_thickness_ext,
+                                           velocity_p=velocity_p_ext,
+                                           velocity_s=velocity_s_ext,
+                                           density=density_ext, dc=dc,
                                            algorithm=algorithm, dp=dp)
         kernel = sensitivity(period, mode=0, wave=phase,
                              parameter="velocity_s").kernel
 
-        kernel_nodes = np.zeros(shape=(len(velocity_s) + 1,))
+        kernel_nodes = np.zeros(shape=(len(velocity_s_ext) + 1,))
         kernel_nodes[0] = kernel[0]
         kernel_nodes[-1] = kernel[-1]
         kernel_nodes[1:-1] = 0.5 * (kernel[1:] + kernel[:-1])
 
-        return kernel_nodes
+        return kernel_nodes[:nnodes]
 
     def plot_sensitivity_kernel(
             self,
@@ -3651,6 +3660,7 @@ class SurfaceWaveVelocity(Grid):
             vmax: Optional[float] = None,
             mask: Optional[dict] = None,
             geographic: bool = False,
+            show_colorbar: bool = True,
             **imshow_kwargs,
     ):
         """
@@ -3679,6 +3689,8 @@ class SurfaceWaveVelocity(Grid):
         geographic : bool, default=False
             If True, axes are labeled with geographic coordinates (easting/northing)
             instead of grid indices.
+        show_colorbar: bool, default=True
+            if True, plot the colorbar
         imshow_kwargs : dict
             Additional keyword arguments passed to `matplotlib.axes.Axes.imshow`.
 
@@ -3763,8 +3775,10 @@ class SurfaceWaveVelocity(Grid):
             vmax = np.nanpercentile(grid_data, 99)
         cax.set_clim(vmin, vmax)
 
-        cb = fig.colorbar(cax, ax=ax)
-        cb.update_normal(cax)
+        # Add colorbar (always)
+        if show_colorbar:
+            cb = fig.colorbar(cax, ax=ax)
+            cb.update_normal(cax)
 
             # Axis labels (same as before)
         if self.grid_units == GridUnits.METER:
