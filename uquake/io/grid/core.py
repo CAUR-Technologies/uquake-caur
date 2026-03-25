@@ -47,6 +47,7 @@ from typing import Union, List, Tuple, Dict, Any, Optional
 import os
 from enum import Enum
 from pyevtk.hl import gridToVTK
+import pyvista as pv
 
 
 def read_pickle(filename, protocol=-1, **kwargs):
@@ -152,7 +153,7 @@ def read_csv(filename, *args, **kwargs):
     pass
 
 
-def write_vtk(grid, filename, field_name=None, **kwargs):
+def write_vtk(grid, filename, field=None, **kwargs):
     """
     write a GridData object to disk in VTK format (Paraview, MayaVi2,
     etc.) using
@@ -162,18 +163,22 @@ def write_vtk(grid, filename, field_name=None, **kwargs):
     :type filename: str
     :param grid: grid to be saved
     :type grid: ~uquake.core.data.grid.GridData
-    :param field_name: field to save
+    :param field: field to save
     .. NOTE:
         see the imageToVTK function from the pyevtk.hl module for more
         information on possible additional paramter.
     """
-
     if grid.ndim == 3:
         x_ref = np.arange(grid.origin[0], grid.corner[0], grid.spacing[0])
         y_ref = np.arange(grid.origin[1], grid.corner[1], grid.spacing[1])
         z_ref = np.arange(grid.origin[2], grid.corner[2], grid.spacing[2])
-        gridToVTK(filename, x_ref, y_ref, z_ref,
-                  pointData={field_name: grid.data})
+        data = np.array(grid.data, dtype=np.float32, order='F')
+
+        X, Y, Z = np.meshgrid(x_ref, y_ref, z_ref, indexing='ij')
+        grid_vtk = pv.StructuredGrid(X, Y, Z)
+        grid_vtk[field] = data.flatten(order="F")
+        grid_vtk.save(filename + '.vts')
+
 
     if grid.ndim == 2:
         x_ref = np.arange(grid.origin[0], grid.corner[0], grid.spacing[0])
