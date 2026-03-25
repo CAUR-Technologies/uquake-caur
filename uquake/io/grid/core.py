@@ -179,7 +179,6 @@ def write_vtk(grid, filename, field=None, **kwargs):
         grid_vtk[field] = data.flatten(order="F")
         grid_vtk.save(filename + '.vts')
 
-
     if grid.ndim == 2:
         x_ref = np.arange(grid.origin[0], grid.corner[0], grid.spacing[0])
         y_ref = np.arange(grid.origin[1], grid.corner[1], grid.spacing[1])
